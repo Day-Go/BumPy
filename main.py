@@ -1,4 +1,5 @@
 import time
+import random
 import numpy as np
 import numba.cuda
 from numba import cuda
@@ -9,22 +10,23 @@ from OpenGL.GLU import *
 from math import pi, sin, cos, asin, acos
 from dataclasses import dataclass
 
-from physics import smoothing_kernel, smoothing_kernel_numpy
+from physics import smoothing_kernel
 
 @dataclass
 class Particle:
     x: float 
     y: float
+    density: float = 0
     mass: float = 1
 
 def draw_circle(x: float, y: float, radius: float):
-    num_segments = 360
+    num_segments = 36  # Reduced for performance, adjust as necessary
 
     glPushMatrix()
     glTranslate(x, y, 0)
 
     glBegin(GL_TRIANGLE_FAN)
-    glVertex3f(0, 0, 0)
+    glVertex3f(0, 0, 0)  # Center point
     for i in range(num_segments + 1):
         angle = 2 * pi * i / num_segments
         glVertex3f(cos(angle) * radius, sin(angle) * radius, 0)
@@ -32,31 +34,35 @@ def draw_circle(x: float, y: float, radius: float):
 
     glPopMatrix()
 
+def generate_particles(n: int):
+    dim = int(np.sqrt(n))
+    spacing = min(SCREEN_RESOLUTION) / (dim + 1) * 2 
+    for i in range(dim):
+        for j in range(dim):
+            x = (-SCREEN_RESOLUTION[0] + spacing * (i + 1) + random.uniform(-25, 25)) / SCREEN_RESOLUTION[0]
+            y = (-SCREEN_RESOLUTION[0] + spacing * (j + 1) + random.uniform(-25, 25)) / SCREEN_RESOLUTION[1]
+            particles.append(Particle(x, y))
 
+particles = []
+SCREEN_RESOLUTION = (800, 800)
 def main():
     pygame.init()
-    display = (800, 800)
-    pygame.display.set_mode(display, DOUBLEBUF|OPENGL)
+    pygame.display.set_mode(SCREEN_RESOLUTION, DOUBLEBUF|OPENGL)
 
-    paricle = Particle(0, 0)
-    gluPerspective(90, (display[0]/display[1]), 0.1, 50.0)
-    glTranslatef(0.0, 0.0, -5)
 
-    radius = 1
-    theta = 0
+    generate_particles(300)
+    radius = 0.01
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT or event.type == pygame.KEYDOWN:
                 pygame.quit()
                 quit()
 
-        x = cos(theta)
-        y = sin(theta) 
-
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
-        draw_circle(x, y, radius)
+        for particle in particles:
+            draw_circle(particle.x, particle.y, radius)
+
         pygame.display.flip()
-        theta = (theta + 0.1) % (2 * pi)
         pygame.time.wait(10)
 
 
