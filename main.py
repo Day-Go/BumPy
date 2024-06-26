@@ -16,6 +16,8 @@ from physics import smoothing_kernel
 class Particle:
     x: float 
     y: float
+    velocity: float = 0
+    acceleration: float = 0
     density: float = 0
     mass: float = 1
 
