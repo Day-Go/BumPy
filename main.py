@@ -51,8 +51,24 @@ def main():
     pygame.init()
     pygame.display.set_mode(SCREEN_RESOLUTION, DOUBLEBUF|OPENGL)
 
+    n_particles = 300
+    generate_particles(n_particles)
+    positions = np.array([[p.x, p.y] for p in particles], dtype=np.float32)
+    masses = np.array([p.mass for p in particles], dtype=np.float32)
+    densities = np.array([p.density for p in particles], dtype=np.float32)
+    field_values = np.random.rand(n_particles).astype(np.float32)  # Assuming field_values still needs random initialization
+    outputs = np.zeros(n_particles, dtype=np.float32)
+    h = 0.1
 
-    generate_particles(300)
+    d_positions = cuda.to_device(positions)
+    d_masses = cuda.to_device(masses)
+    d_densities = cuda.to_device(densities)
+    d_field_values = cuda.to_device(field_values)
+    d_outputs = cuda.to_device(outputs)
+
+    threads_per_block = 256
+    blocks_per_grid = (positions.shape[0] + threads_per_block - 1) // threads_per_block
+
     radius = 0.01
     while True:
         for event in pygame.event.get():
