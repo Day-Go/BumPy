@@ -10,7 +10,7 @@ from OpenGL.GLU import *
 from math import pi, sin, cos, asin, acos
 from dataclasses import dataclass
 
-from physics import smoothing_kernel
+from physics import calc_field_props, calc_field_gradient 
 
 
 @dataclass
@@ -20,6 +20,7 @@ class Particle:
     velocity: float = 0
     acceleration: float = 0
     density: float = 0
+    pressure: float = 0
     mass: float = 1
 
 
@@ -66,15 +67,12 @@ def main():
     positions = np.array([[p.x, p.y] for p in particles], dtype=np.float32)
     masses = np.array([p.mass for p in particles], dtype=np.float32)
     densities = np.array([p.density for p in particles], dtype=np.float32)
-    field_values = np.random.rand(n_particles).astype(np.float32)
-    outputs = np.zeros(n_particles, dtype=np.float32)
+    pressures = np.array([p.pressure for p in particles], dtype=np.float32)
     h = 0.1
 
     d_positions = cuda.to_device(positions)
     d_masses = cuda.to_device(masses)
     d_densities = cuda.to_device(densities)
-    d_field_values = cuda.to_device(field_values)
-    d_outputs = cuda.to_device(outputs)
 
     threads_per_block = 256
     blocks_per_grid = (positions.shape[0] + threads_per_block - 1) // threads_per_block
@@ -86,15 +84,15 @@ def main():
                 pygame.quit()
                 quit()
 
-        smoothing_kernel[threads_per_block, blocks_per_grid](
-            d_positions, d_masses, d_densities, d_field_values, d_outputs, h
-        )
+        calc_field_props[threads_per_block, blocks_per_grid](d_positions, d_masses, d_densities, h)
+        calc_field_gradients[threads_per_block, blocks_per_grid](d_positions, d_masses, d_densities, h)
+
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
         for particle in particles:
             draw_circle(particle.x, particle.y, radius)
 
         pygame.display.flip()
-        pygame.time.wait(10)
+        pygame.time.wait(100)
 
 
 if __name__ == "__main__":
