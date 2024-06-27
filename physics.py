@@ -3,6 +3,14 @@ import numpy as np
 import numba.cuda
 from numba import cuda, float32
 
+TARGET_DENSITY = 10
+PRESSURE_MULTIPLIER = 2
+
+@cuda.jit(device=True)
+def convert_density_to_pressure(density):
+    density_error = density - TARGET_DENSITY
+    pressure = density_error * PRESSURE_MULTIPLIER
+    return pressure
 
 @cuda.jit(device=True)
 def gaussian_kernel(r, h):
@@ -47,34 +55,94 @@ def cubic_spline_dq(q):
 
 
 @cuda.jit
-def calc_field_props(positions, masses, field_values, h):
+def calc_densities(particles_array, h):
     i = cuda.grid(1)
-    if i >= positions.shape[0]:
+    if i >= particles_array.shape[0]:
         return
 
-    field_values[i] = 0
-    x_i, y_i = positions[i]
+    particle = particles_array[i]
+    particle['density'] = 0
+    x_i, y_i = particle['position']
     # Calculate the influence of all particles on particle i
-    for j in range(positions.shape[0]):
-        x_j, y_j = positions[j]
+    for j in range(particles_array.shape[0]):
+        x_j, y_j = particles_array[j]['position'] 
         r = euclidean_distance(x_i, x_j, y_i, y_j)
         q = 1 / h * r
-        field_values[i] += cubic_spline(q) * masses[j]
+        particle['density'] += cubic_spline(q) * particles_array[j]['mass']
 
 @cuda.jit
-def calc_field_gradients(positions, masses, densities, h):
+def calc_density_gradients(particles_array, h):
     i = cuda.grid(1)
-    if i >= positions.shape[0]:
+    if i >= particles_array.shape[0]:
         return
 
-    x_i, y_i = positions[i]
+    particle = particles_array[i]
+    particle['density_gradient'][0] = 0
+    particle['density_gradient'][1] = 0
+
+    x_i, y_i = particle['position']
     # Calculate the influence of all particles on particle i
-    for j in range(positions.shape[0]):
-        x_j, y_j = positions[j]
+    for j in range(particles_array.shape[0]):
+        x_j, y_j = particles_array[j]['position']
         r = euclidean_distance(x_i, x_j, y_i, y_j)
         q = 1 / h * r
-        dx, dy = direction_to(x_i, y_i, x_j, y_j)  
-        field_values[i] += cubic_spline(q) * masses[j]
+        dx, dy = direction_to(x_i, y_i, x_j, y_j)
+        slope = cubic_spline_dq(q)
+
+        grad_x = -particle['density'] * particles_array[j]['mass'] * slope * dx / particle['density']
+        grad_y = -particle['density'] * particles_array[j]['mass'] * slope * dy / particle['density']
+        particle['density_gradient'][0] += grad_x
+        particle['density_gradient'][1] += grad_y
+
+@cuda.jit
+def calc_pressure_force(particles_array, h):
+    i = cuda.grid(1)
+    if i >= particles_array.shape[0]:
+        return
+
+    particle = particles_array[i]
+    x_i, y_i = particle['position']
+    for j in range(particles_array.shape[0]):
+        if i == j: continue
+
+        x_j, y_j = particles_array[j]['position']
+        r = euclidean_distance(x_i, x_j, y_i, y_j)
+        q = 1 / h * r
+        dx, dy = direction_to(x_i, y_i, x_j, y_j)
+        slope = cubic_spline_dq(q)
+
+        force_x = convert_density_to_pressure(particle['density']) * dx * slope * particle['mass'] / particle['density']
+        force_y = convert_density_to_pressure(particle['density']) * dy * slope * particle['mass'] / particle['density']
+        particle['pressure_force'][0] += force_x 
+        particle['pressure_force'][1] += force_y 
+
+@cuda.jit(device=True)
+def update_velocity(velocity, pressure_force, density, dt):
+    if density != 0:
+        pressure_accel_x = pressure_force[0] / density
+        pressure_accel_y = pressure_force[1] / density
+    else:
+        pressure_accel_x = 0
+        pressure_accel_y = 0
+
+    velocity[0] += pressure_accel_x * dt
+    velocity[1] += pressure_accel_y * dt
+    return velocity
+
+@cuda.jit
+def update_positions(particles_array, dt):
+    i = cuda.grid(1)
+    if i >= particles_array.shape[0]:
+        return
+
+    particle = particles_array[i]
+
+    particle['velocity'] = update_velocity(
+        particle['velocity'], particle['pressure_force'], particle['density'], dt
+    )
+
+    particle['position'][0] += particle['velocity'][0] * dt
+    particle['position'][1] += particle['velocity'][1] * dt
 
 def gaussian_kernel_np(r, h):
     return np.exp(-(r**2) / (2 * h**2))

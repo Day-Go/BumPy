@@ -10,28 +10,34 @@ from OpenGL.GLU import *
 from math import pi, sin, cos, asin, acos
 from dataclasses import dataclass
 
-from physics import calc_field_props, calc_field_gradient 
+from physics import calc_densities, calc_density_gradients, calc_pressure_force, update_positions 
 
 
 @dataclass
 class Particle:
     x: float
     y: float
-    velocity: float = 0
-    acceleration: float = 0
-    density: float = 0
-    pressure: float = 0
-    mass: float = 1
 
+particle_dtype = np.dtype([
+    ('position', np.float32, (2,)),
+    ('force', np.float32, (2,)),
+    ('velocity', np.float32, (2,)),
+    ('acceleration', np.float32, (2,)),
+    ('density', np.float32),
+    ('density_gradient', np.float32, (2,)),
+    ('pressure', np.float32),
+    ('pressure_force', np.float32, (2,)),
+    ('mass', np.float32)
+])
 
 def draw_circle(x: float, y: float, radius: float):
-    num_segments = 36  # Reduced for performance, adjust as necessary
+    num_segments = 36
 
     glPushMatrix()
     glTranslate(x, y, 0)
 
     glBegin(GL_TRIANGLE_FAN)
-    glVertex3f(0, 0, 0)  # Center point
+    glVertex3f(0, 0, 0)
     for i in range(num_segments + 1):
         angle = 2 * pi * i / num_segments
         glVertex3f(cos(angle) * radius, sin(angle) * radius, 0)
@@ -64,35 +70,48 @@ def main():
 
     n_particles = 300
     generate_particles(n_particles)
-    positions = np.array([[p.x, p.y] for p in particles], dtype=np.float32)
-    masses = np.array([p.mass for p in particles], dtype=np.float32)
-    densities = np.array([p.density for p in particles], dtype=np.float32)
-    pressures = np.array([p.pressure for p in particles], dtype=np.float32)
-    h = 0.1
+    particles_array = np.zeros(len(particles), dtype=particle_dtype)
 
-    d_positions = cuda.to_device(positions)
-    d_masses = cuda.to_device(masses)
-    d_densities = cuda.to_device(densities)
+    # Fill the structured array with data from the particles list
+    for i, p in enumerate(particles):
+        particles_array[i]['position'] = [p.x, p.y]
+        particles_array[i]['force'] = [0, 0]
+        particles_array[i]['velocity'] = [0, 0]
+        particles_array[i]['acceleration'] = [0, 0]
+        particles_array[i]['density'] = 0
+        particles_array[i]['density_gradient'] = [0, 0]
+        particles_array[i]['pressure'] = 0
+        particles_array[i]['pressure_force'] = [0, 0]
+        particles_array[i]['mass'] = 1
+
+    d_particles_array = cuda.to_device(particles_array)
+
+    h = 0.05
 
     threads_per_block = 256
-    blocks_per_grid = (positions.shape[0] + threads_per_block - 1) // threads_per_block
+    blocks_per_grid = (particles_array.shape[0] + threads_per_block - 1) // threads_per_block
 
     radius = 0.01
+    d_time = 1 / 60
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT or event.type == pygame.KEYDOWN:
                 pygame.quit()
                 quit()
 
-        calc_field_props[threads_per_block, blocks_per_grid](d_positions, d_masses, d_densities, h)
-        calc_field_gradients[threads_per_block, blocks_per_grid](d_positions, d_masses, d_densities, h)
+        calc_densities[threads_per_block, blocks_per_grid](d_particles_array, h)
+        calc_density_gradients[threads_per_block, blocks_per_grid](d_particles_array, h)
+        calc_pressure_force[threads_per_block, blocks_per_grid](d_particles_array, h)
+        update_positions[threads_per_block, blocks_per_grid](d_particles_array, h)
+
+        particles_array = d_particles_array.copy_to_host()
+        print(particles_array)
 
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
-        for particle in particles:
-            draw_circle(particle.x, particle.y, radius)
+        for particle in particles_array:
+            draw_circle(particle['position'][0], particle['position'][1], radius)
 
         pygame.display.flip()
-        pygame.time.wait(100)
 
 
 if __name__ == "__main__":
