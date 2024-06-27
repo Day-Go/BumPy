@@ -68,7 +68,7 @@ def main():
     pygame.init()
     pygame.display.set_mode(SCREEN_RESOLUTION, DOUBLEBUF | OPENGL)
 
-    n_particles = 300
+    n_particles = 300 
     generate_particles(n_particles)
     particles_array = np.zeros(len(particles), dtype=particle_dtype)
 
@@ -91,6 +91,9 @@ def main():
     threads_per_block = 256
     blocks_per_grid = (particles_array.shape[0] + threads_per_block - 1) // threads_per_block
 
+    normalized_width = 1.0
+    normalized_height = 1.0
+
     radius = 0.01
     d_time = 1 / 60
     while True:
@@ -102,10 +105,10 @@ def main():
         calc_densities[threads_per_block, blocks_per_grid](d_particles_array, h)
         calc_density_gradients[threads_per_block, blocks_per_grid](d_particles_array, h)
         calc_pressure_force[threads_per_block, blocks_per_grid](d_particles_array, h)
-        update_positions[threads_per_block, blocks_per_grid](d_particles_array, h)
+        update_positions[threads_per_block, blocks_per_grid](d_particles_array, h,normalized_width, normalized_height)
 
         particles_array = d_particles_array.copy_to_host()
-        print(particles_array)
+        #print(particles_array['density'])
 
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
         for particle in particles_array:

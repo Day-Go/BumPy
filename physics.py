@@ -3,8 +3,8 @@ import numpy as np
 import numba.cuda
 from numba import cuda, float32
 
-TARGET_DENSITY = 10
-PRESSURE_MULTIPLIER = 2
+TARGET_DENSITY = 8
+PRESSURE_MULTIPLIER = 0.01
 
 @cuda.jit(device=True)
 def convert_density_to_pressure(density):
@@ -40,7 +40,8 @@ def cubic_spline(q):
         weight = 6 * (math.pow(q, 3) - math.pow(q, 2)) + 1
     else:
         weight = 0
-    return weight
+    volume = 4 / (3 * math.pi)
+    return weight / volume
 
 @cuda.jit(device=True)
 def cubic_spline_dq(q):
@@ -94,6 +95,12 @@ def calc_density_gradients(particles_array, h):
         particle['density_gradient'][0] += grad_x
         particle['density_gradient'][1] += grad_y
 
+@cuda.jit(device=True)
+def calc_shared_pressure(d1, d2):
+    p1 = convert_density_to_pressure(d1)
+    p2 = convert_density_to_pressure(d2)
+    return (p1 + p2) / 2
+
 @cuda.jit
 def calc_pressure_force(particles_array, h):
     i = cuda.grid(1)
@@ -101,6 +108,8 @@ def calc_pressure_force(particles_array, h):
         return
 
     particle = particles_array[i]
+    particle['pressure_force'][0] = 0
+    particle['pressure_force'][1] = 0
     x_i, y_i = particle['position']
     for j in range(particles_array.shape[0]):
         if i == j: continue
@@ -111,8 +120,9 @@ def calc_pressure_force(particles_array, h):
         dx, dy = direction_to(x_i, y_i, x_j, y_j)
         slope = cubic_spline_dq(q)
 
-        force_x = convert_density_to_pressure(particle['density']) * dx * slope * particle['mass'] / particle['density']
-        force_y = convert_density_to_pressure(particle['density']) * dy * slope * particle['mass'] / particle['density']
+        shared_pressure = calc_shared_pressure(particle['density'], particles_array[j]['density'])
+        force_x = shared_pressure * dx * slope * particle['mass'] / particle['density']
+        force_y = shared_pressure * dy * slope * particle['mass'] / particle['density']
         particle['pressure_force'][0] += force_x 
         particle['pressure_force'][1] += force_y 
 
@@ -130,19 +140,35 @@ def update_velocity(velocity, pressure_force, density, dt):
     return velocity
 
 @cuda.jit
-def update_positions(particles_array, dt):
+def update_positions(particles_array, dt, screen_width, screen_height):
     i = cuda.grid(1)
     if i >= particles_array.shape[0]:
         return
 
     particle = particles_array[i]
 
-    particle['velocity'] = update_velocity(
+    # Update velocity first (assuming this updates both components)
+    update_velocity(
         particle['velocity'], particle['pressure_force'], particle['density'], dt
     )
 
-    particle['position'][0] += particle['velocity'][0] * dt
-    particle['position'][1] += particle['velocity'][1] * dt
+    # Tentative new position calculation
+    new_x = particle['position'][0] + particle['velocity'][0] * dt
+    new_y = particle['position'][1] + particle['velocity'][1] * dt
+
+    # Check for collisions with the horizontal walls
+    if new_x <= -screen_width or new_x >= screen_width:
+        particle['velocity'][0] *= -1  # Reverse the horizontal component of the velocity
+        new_x = particle['position'][0]  # Reset position to current to prevent sticking to walls
+
+    # Check for collisions with the vertical walls
+    if new_y <= -screen_height or new_y >= screen_height:
+        particle['velocity'][1] *= -1  # Reverse the vertical component of the velocity
+        new_y = particle['position'][1]  # Reset position to current to prevent sticking to walls
+
+    # Update position with potentially modified velocity
+    particle['position'][0] = new_x
+    particle['position'][1] = new_y
 
 def gaussian_kernel_np(r, h):
     return np.exp(-(r**2) / (2 * h**2))
