@@ -4,22 +4,24 @@ import numpy as np
 import numba.cuda
 from numba import cuda
 import pygame
-from pygame.locals import OPENGL, DOUBLEBUF 
-from OpenGL.GL import * 
+from pygame.locals import OPENGL, DOUBLEBUF
+from OpenGL.GL import *
 from OpenGL.GLU import *
 from math import pi, sin, cos, asin, acos
 from dataclasses import dataclass
 
 from physics import smoothing_kernel
 
+
 @dataclass
 class Particle:
-    x: float 
+    x: float
     y: float
     velocity: float = 0
     acceleration: float = 0
     density: float = 0
     mass: float = 1
+
 
 def draw_circle(x: float, y: float, radius: float):
     num_segments = 36  # Reduced for performance, adjust as necessary
@@ -36,27 +38,35 @@ def draw_circle(x: float, y: float, radius: float):
 
     glPopMatrix()
 
+
 def generate_particles(n: int):
     dim = int(np.sqrt(n))
-    spacing = min(SCREEN_RESOLUTION) / (dim + 1) * 2 
+    spacing = min(SCREEN_RESOLUTION) / (dim + 1) * 2
     for i in range(dim):
         for j in range(dim):
-            x = (-SCREEN_RESOLUTION[0] + spacing * (i + 1) + random.uniform(-25, 25)) / SCREEN_RESOLUTION[0]
-            y = (-SCREEN_RESOLUTION[0] + spacing * (j + 1) + random.uniform(-25, 25)) / SCREEN_RESOLUTION[1]
+            x = (
+                -SCREEN_RESOLUTION[0] + spacing * (i + 1) + random.uniform(-25, 25)
+            ) / SCREEN_RESOLUTION[0]
+            y = (
+                -SCREEN_RESOLUTION[0] + spacing * (j + 1) + random.uniform(-25, 25)
+            ) / SCREEN_RESOLUTION[1]
             particles.append(Particle(x, y))
+
 
 particles = []
 SCREEN_RESOLUTION = (800, 800)
+
+
 def main():
     pygame.init()
-    pygame.display.set_mode(SCREEN_RESOLUTION, DOUBLEBUF|OPENGL)
+    pygame.display.set_mode(SCREEN_RESOLUTION, DOUBLEBUF | OPENGL)
 
     n_particles = 300
     generate_particles(n_particles)
     positions = np.array([[p.x, p.y] for p in particles], dtype=np.float32)
     masses = np.array([p.mass for p in particles], dtype=np.float32)
     densities = np.array([p.density for p in particles], dtype=np.float32)
-    field_values = np.random.rand(n_particles).astype(np.float32)  # Assuming field_values still needs random initialization
+    field_values = np.random.rand(n_particles).astype(np.float32)
     outputs = np.zeros(n_particles, dtype=np.float32)
     h = 0.1
 
@@ -76,6 +86,9 @@ def main():
                 pygame.quit()
                 quit()
 
+        smoothing_kernel[threads_per_block, blocks_per_grid](
+            d_positions, d_masses, d_densities, d_field_values, d_outputs, h
+        )
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
         for particle in particles:
             draw_circle(particle.x, particle.y, radius)

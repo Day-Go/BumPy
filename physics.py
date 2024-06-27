@@ -3,17 +3,20 @@ import numpy as np
 import numba.cuda
 from numba import cuda, float32
 
+
 @cuda.jit(device=True)
 def gaussian_kernel(r, h):
-    return math.exp(-r**2 / (2 * h**2))
+    return math.exp(-(r**2) / (2 * h**2))
+
 
 @cuda.jit(device=True)
 def euclidean_distance(x_i, x_j, y_i, y_j):
-    return (x_i - x_j)**2 + (y_i - y_j)**2
+    return (x_i - x_j) ** 2 + (y_i - y_j) ** 2
+
 
 @cuda.jit(device=True)
 def cubic_spline(q):
-    if q >= 0.5 and q <=1:
+    if q >= 0.5 and q <= 1:
         base = 1 - q
         weight = 2 * math.pow(base, 3)
     elif q < 0.5:
@@ -21,6 +24,7 @@ def cubic_spline(q):
     else:
         weight = 0
     return weight
+
 
 @cuda.jit
 def smoothing_kernel(positions, masses, densities, field_values, outputs, h):
@@ -50,7 +54,8 @@ def smoothing_kernel(positions, masses, densities, field_values, outputs, h):
 
 
 def gaussian_kernel_np(r, h):
-    return np.exp(-r**2 / (2 * h**2))
+    return np.exp(-(r**2) / (2 * h**2))
+
 
 def smoothing_kernel_np(positions, masses, densities, field_values, h):
     n = positions.shape[0]
