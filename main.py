@@ -68,7 +68,7 @@ def main():
     pygame.init()
     pygame.display.set_mode(SCREEN_RESOLUTION, DOUBLEBUF | OPENGL)
 
-    n_particles = 400 
+    n_particles = 150 
     generate_particles(n_particles)
     particles_array = np.zeros(len(particles), dtype=particle_dtype)
 
@@ -86,7 +86,6 @@ def main():
 
     d_particles_array = cuda.to_device(particles_array)
 
-    h = 0.15
 
     threads_per_block = 256
     blocks_per_grid = (particles_array.shape[0] + threads_per_block - 1) // threads_per_block
@@ -94,8 +93,8 @@ def main():
     normalized_width = 1.0
     normalized_height = 1.0
 
-    radius = 0.01
-    d_time = 1 / 60
+    radius = 4 / n_particles
+    h = radius * n_particles / 18
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT or event.type == pygame.KEYDOWN:

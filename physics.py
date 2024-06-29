@@ -3,15 +3,15 @@ import numpy as np
 import numba.cuda
 from numba import cuda, float32
 
-TARGET_DENSITY = 30
-PRESSURE_MULTIPLIER = 0.0001
+TARGET_DENSITY = 8
+PRESSURE_MULTIPLIER = 150
 EPSILON = 1e-5
 
 @cuda.jit(device=True)
 def convert_density_to_pressure(density):
     density_error = density - TARGET_DENSITY
-    pressure = density_error * density_error * PRESSURE_MULTIPLIER
-    return max(pressure, 0)
+    pressure = density_error * PRESSURE_MULTIPLIER
+    return min(pressure, 0)
 
 @cuda.jit(device=True)
 def gaussian_kernel(r, h):
@@ -133,8 +133,8 @@ def calc_pressure_force(particles_array, h):
             shared_pressure = calc_shared_pressure(particle['density'], particles_array[j]['density'])
             force_x = shared_pressure * dx * slope * particle['mass'] / (particle['density'] + EPSILON)
             force_y = shared_pressure * dy * slope * particle['mass'] / (particle['density'] + EPSILON)
-            particle['pressure_force'][0] += force_x 
-            particle['pressure_force'][1] += force_y 
+            particle['pressure_force'][0] -= force_x 
+            particle['pressure_force'][1] -= force_y 
 
 @cuda.jit(device=True)
 def update_velocity(velocity, pressure_force, density, dt):
@@ -171,7 +171,7 @@ def update_positions(particles_array, dt, screen_width, screen_height):
     new_y = particle['position'][1] + new_vy * dt
 
     # Boundary conditions
-    damping = 0.5  # Velocity damping factor
+    damping = 0.99  # Velocity damping factor
     if new_x <= -screen_width:
         new_x = -screen_width
         new_vx *= -damping
