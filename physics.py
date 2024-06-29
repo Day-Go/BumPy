@@ -146,7 +146,8 @@ def update_velocity(velocity, pressure_force, density, dt):
     return velocity
 
 @cuda.jit
-def update_positions(particles_array, dt, screen_width, screen_height):
+def update_positions(particles_array, dt, screen_width, screen_height, rect_width, rect_height, rect_angle):
+    #def update_positions(particles_array, dt, screen_width, screen_height):
     i = cuda.grid(1)
     if i >= particles_array.shape[0]:
         return
@@ -182,6 +183,26 @@ def update_positions(particles_array, dt, screen_width, screen_height):
         new_y = screen_height
         new_vy *= -damping
 
+    if point_in_rotated_rectangle(new_x, new_y, 0, 0, rect_width, rect_height, rect_angle):
+        # Calculate normal vector of the rectangle side
+        normal_x, normal_y = rotate_point(0, 1, rect_angle)
+        
+        # Project velocity onto normal
+        dot_product = new_vx * normal_x + new_vy * normal_y
+        
+        # Reflect velocity
+        new_vx -= 2 * dot_product * normal_x
+        new_vy -= 2 * dot_product * normal_y
+        
+        # Apply damping
+        new_vx *= damping
+        new_vy *= damping
+        
+        # Move particle outside of rectangle
+        while point_in_rotated_rectangle(new_x, new_y, 0, 0, rect_width, rect_height, rect_angle):
+            new_x += normal_x * 0.001
+            new_y += normal_y * 0.001
+
     # Update velocity again (leapfrog)
     particle['velocity'][0] = new_vx + 0.5 * particle['pressure_force'][0] / particle['density'] * dt
     particle['velocity'][1] = new_vy + 0.5 * particle['pressure_force'][1] / particle['density'] * dt
@@ -190,3 +211,22 @@ def update_positions(particles_array, dt, screen_width, screen_height):
     particle['position'][0] = new_x
     particle['position'][1] = new_y
 
+@cuda.jit(device=True)
+def rotate_point(x, y, angle):
+    cos_angle = math.cos(angle)
+    sin_angle = math.sin(angle)
+    return x * cos_angle - y * sin_angle, x * sin_angle + y * cos_angle
+
+@cuda.jit(device=True)
+def point_in_rotated_rectangle(px, py, rect_x, rect_y, rect_width, rect_height, angle):
+    # Translate point to origin
+    translated_x = px - rect_x
+    translated_y = py - rect_y
+    
+    # Rotate point
+    rotated_x, rotated_y = rotate_point(translated_x, translated_y, -angle)
+    
+    # Check if point is inside rectangle
+    half_width = rect_width / 2
+    half_height = rect_height / 2
+    return -half_width <= rotated_x <= half_width and -half_height <= rotated_y <= half_height

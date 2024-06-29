@@ -7,7 +7,7 @@ import pygame
 from pygame.locals import OPENGL, DOUBLEBUF
 from OpenGL.GL import *
 from OpenGL.GLU import *
-from math import pi, sin, cos, asin, acos
+from math import pi, sin, cos, radians
 from dataclasses import dataclass
 import dearpygui.dearpygui as dpg
 
@@ -30,6 +30,9 @@ particle_dtype = np.dtype([
     ('mass', np.float32)
 ])
 
+def set_color(r, g, b):
+    glColor3f(r, g, b)
+
 def draw_circle(x: float, y: float, radius: float):
     num_segments = 36
 
@@ -43,6 +46,21 @@ def draw_circle(x: float, y: float, radius: float):
         glVertex3f(cos(angle) * radius, sin(angle) * radius, 0)
     glEnd()
 
+    glPopMatrix()
+
+def draw_rectangle(x, y, width, height, angle):
+    glPushMatrix()
+    glTranslate(x, y, 0)
+    glRotate(angle * 180 / pi, 0, 0, 1)
+    
+    glColor3f(0, 1, 0)  # Green color
+    glBegin(GL_QUADS)
+    glVertex2f(-width/2, -height/2)
+    glVertex2f(width/2, -height/2)
+    glVertex2f(width/2, height/2)
+    glVertex2f(-width/2, height/2)
+    glEnd()
+    
     glPopMatrix()
 
 def generate_particles(n: int, spacing: float, stochasticity: float):
@@ -81,8 +99,13 @@ particles = []
 particles_array = None
 d_particles_array = None
 
+RECTANGLE_WIDTH = 0.4
+RECTANGLE_HEIGHT = 0.1
+rectangle_angle = 0
+ROTATION_SPEED = 3  # radians per second
+
 def start_simulation():
-    global particles, particles_array, d_particles_array, simulation_running
+    global particles, particles_array, d_particles_array, simulation_running, rectangle_angle
     
     n_particles = dpg.get_value("num_particles")
     particle_radius = dpg.get_value("particle_radius")
@@ -113,7 +136,7 @@ def pause_simulation():
 TARGET_DENSITY = 8
 PRESSURE_MULTIPLIER = 10
 def main():
-    global particles_array, d_particles_array, simulation_running, TARGET_DENSITY, PRESSURE_MULTIPLIER
+    global particles_array, d_particles_array, simulation_running, TARGET_DENSITY, PRESSURE_MULTIPLIER, rectangle_angle
 
     dpg.create_context()
 
@@ -157,14 +180,18 @@ def main():
             calc_densities[threads_per_block, blocks_per_grid](d_particles_array, h)
             calc_density_gradients[threads_per_block, blocks_per_grid](d_particles_array, h)
             calc_pressure_force[threads_per_block, blocks_per_grid](d_particles_array, h, TARGET_DENSITY, PRESSURE_MULTIPLIER)
-            update_positions[threads_per_block, blocks_per_grid](d_particles_array, h, normalized_width, normalized_height)
-
+            update_positions[threads_per_block, blocks_per_grid](d_particles_array, 1/60, normalized_width, normalized_height, RECTANGLE_WIDTH, RECTANGLE_HEIGHT, rectangle_angle)
             particles_array = d_particles_array.copy_to_host()
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            set_color(1, 1, 1)
             for particle in particles_array:
                 draw_circle(particle['position'][0], particle['position'][1], dpg.get_value("particle_radius"))
-
+            
+            set_color(0, 1, 0)
+            rectangle_angle += ROTATION_SPEED * 1/60  # Assuming 60 FPS
+            draw_rectangle(0, 0, RECTANGLE_WIDTH, RECTANGLE_HEIGHT, rectangle_angle)
+            
             pygame.display.flip()
 
 if __name__ == "__main__":
