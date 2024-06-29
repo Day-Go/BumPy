@@ -3,14 +3,15 @@ import numpy as np
 import numba.cuda
 from numba import cuda, float32
 
-TARGET_DENSITY = 8
-PRESSURE_MULTIPLIER = 0.01
+TARGET_DENSITY = 30
+PRESSURE_MULTIPLIER = 0.0001
+EPSILON = 1e-5
 
 @cuda.jit(device=True)
 def convert_density_to_pressure(density):
     density_error = density - TARGET_DENSITY
-    pressure = density_error * PRESSURE_MULTIPLIER
-    return pressure
+    pressure = density_error * density_error * PRESSURE_MULTIPLIER
+    return max(pressure, 0)
 
 @cuda.jit(device=True)
 def gaussian_kernel(r, h):
@@ -54,6 +55,15 @@ def cubic_spline_dq(q):
         weight = 0
     return weight
 
+@cuda.jit(device=True)
+def spiky_kernel(r, h):
+    factor = 15.0 / (math.pi * h**6)
+    return factor * (h - r)**3
+
+@cuda.jit(device=True)
+def spiky_kernel_gradient(r, h):
+    factor = -45.0 / (math.pi * h**6)
+    return factor * (h - r)**2
 
 @cuda.jit
 def calc_densities(particles_array, h):
@@ -67,9 +77,8 @@ def calc_densities(particles_array, h):
     # Calculate the influence of all particles on particle i
     for j in range(particles_array.shape[0]):
         x_j, y_j = particles_array[j]['position'] 
-        r = euclidean_distance(x_i, x_j, y_i, y_j)
-        q = 1 / h * r
-        particle['density'] += cubic_spline(q) * particles_array[j]['mass']
+        r = math.sqrt(euclidean_distance(x_i, x_j, y_i, y_j))
+        particle['density'] += spiky_kernel(r, h) * particles_array[j]['mass']
 
 @cuda.jit
 def calc_density_gradients(particles_array, h):
@@ -85,15 +94,15 @@ def calc_density_gradients(particles_array, h):
     # Calculate the influence of all particles on particle i
     for j in range(particles_array.shape[0]):
         x_j, y_j = particles_array[j]['position']
-        r = euclidean_distance(x_i, x_j, y_i, y_j)
-        q = 1 / h * r
-        dx, dy = direction_to(x_i, y_i, x_j, y_j)
-        slope = cubic_spline_dq(q)
+        r = math.sqrt(euclidean_distance(x_i, x_j, y_i, y_j))
+        if r < h:
+            dx, dy = direction_to(x_i, y_i, x_j, y_j)
+            slope = spiky_kernel_gradient(r, h)
 
-        grad_x = -particle['density'] * particles_array[j]['mass'] * slope * dx / particle['density']
-        grad_y = -particle['density'] * particles_array[j]['mass'] * slope * dy / particle['density']
-        particle['density_gradient'][0] += grad_x
-        particle['density_gradient'][1] += grad_y
+            grad_x = particles_array[j]['mass'] * slope * dx / (h * r)
+            grad_y = particles_array[j]['mass'] * slope * dy / (h * r)
+            particle['density_gradient'][0] += grad_x
+            particle['density_gradient'][1] += grad_y
 
 @cuda.jit(device=True)
 def calc_shared_pressure(d1, d2):
@@ -115,16 +124,17 @@ def calc_pressure_force(particles_array, h):
         if i == j: continue
 
         x_j, y_j = particles_array[j]['position']
-        r = euclidean_distance(x_i, x_j, y_i, y_j)
-        q = 1 / h * r
-        dx, dy = direction_to(x_i, y_i, x_j, y_j)
-        slope = cubic_spline_dq(q)
+        r = math.sqrt(euclidean_distance(x_i, x_j, y_i, y_j))
+        if r < h:
+            q = r / h
+            dx, dy = direction_to(x_i, y_i, x_j, y_j)
+            slope = cubic_spline_dq(q)
 
-        shared_pressure = calc_shared_pressure(particle['density'], particles_array[j]['density'])
-        force_x = shared_pressure * dx * slope * particle['mass'] / particle['density']
-        force_y = shared_pressure * dy * slope * particle['mass'] / particle['density']
-        particle['pressure_force'][0] += force_x 
-        particle['pressure_force'][1] += force_y 
+            shared_pressure = calc_shared_pressure(particle['density'], particles_array[j]['density'])
+            force_x = shared_pressure * dx * slope * particle['mass'] / (particle['density'] + EPSILON)
+            force_y = shared_pressure * dy * slope * particle['mass'] / (particle['density'] + EPSILON)
+            particle['pressure_force'][0] += force_x 
+            particle['pressure_force'][1] += force_y 
 
 @cuda.jit(device=True)
 def update_velocity(velocity, pressure_force, density, dt):
@@ -152,20 +162,34 @@ def update_positions(particles_array, dt, screen_width, screen_height):
         particle['velocity'], particle['pressure_force'], particle['density'], dt
     )
 
+    # Leapfrog integration
+    new_vx = particle['velocity'][0] + 0.5 * particle['pressure_force'][0] / particle['density'] * dt
+    new_vy = particle['velocity'][1] + 0.5 * particle['pressure_force'][1] / particle['density'] * dt
+
     # Tentative new position calculation
-    new_x = particle['position'][0] + particle['velocity'][0] * dt
-    new_y = particle['position'][1] + particle['velocity'][1] * dt
+    new_x = particle['position'][0] + new_vx * dt
+    new_y = particle['position'][1] + new_vy * dt
 
-    # Check for collisions with the horizontal walls
-    if new_x <= -screen_width or new_x >= screen_width:
-        particle['velocity'][0] *= -1  # Reverse the horizontal component of the velocity
-        new_x = particle['position'][0]  # Reset position to current to prevent sticking to walls
+    # Boundary conditions
+    damping = 0.5  # Velocity damping factor
+    if new_x <= -screen_width:
+        new_x = -screen_width
+        new_vx *= -damping
+    elif new_x >= screen_width:
+        new_x = screen_width
+        new_vx *= -damping
 
-    # Check for collisions with the vertical walls
-    if new_y <= -screen_height or new_y >= screen_height:
-        particle['velocity'][1] *= -1  # Reverse the vertical component of the velocity
-        new_y = particle['position'][1]  # Reset position to current to prevent sticking to walls
+    if new_y <= -screen_height:
+        new_y = -screen_height
+        new_vy *= -damping
+    elif new_y >= screen_height:
+        new_y = screen_height
+        new_vy *= -damping
 
+    # Update velocity again (leapfrog)
+    particle['velocity'][0] = new_vx + 0.5 * particle['pressure_force'][0] / particle['density'] * dt
+    particle['velocity'][1] = new_vy + 0.5 * particle['pressure_force'][1] / particle['density'] * dt
+    
     # Update position with potentially modified velocity
     particle['position'][0] = new_x
     particle['position'][1] = new_y
