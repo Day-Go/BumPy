@@ -62,41 +62,41 @@ def spiky_kernel_gradient(r, h):
     return factor * (h - r)**2
 
 @cuda.jit
-def calc_densities(particles_array, h):
+def calc_densities(particle_array, h):
     i = cuda.grid(1)
-    if i >= particles_array.shape[0]:
+    if i >= particle_array.shape[0]:
         return
 
-    particle = particles_array[i]
+    particle = particle_array[i]
     particle['density'] = 0
     x_i, y_i = particle['position']
     # Calculate the influence of all particles on particle i
-    for j in range(particles_array.shape[0]):
-        x_j, y_j = particles_array[j]['position'] 
+    for j in range(particle_array.shape[0]):
+        x_j, y_j = particle_array[j]['position'] 
         r = math.sqrt(euclidean_distance(x_i, x_j, y_i, y_j))
-        particle['density'] += spiky_kernel(r, h) * particles_array[j]['mass']
+        particle['density'] += spiky_kernel(r, h) * particle_array[j]['mass']
 
 @cuda.jit
-def calc_density_gradients(particles_array, h):
+def calc_density_gradients(particle_array, h):
     i = cuda.grid(1)
-    if i >= particles_array.shape[0]:
+    if i >= particle_array.shape[0]:
         return
 
-    particle = particles_array[i]
+    particle = particle_array[i]
     particle['density_gradient'][0] = 0
     particle['density_gradient'][1] = 0
 
     x_i, y_i = particle['position']
     # Calculate the influence of all particles on particle i
-    for j in range(particles_array.shape[0]):
-        x_j, y_j = particles_array[j]['position']
+    for j in range(particle_array.shape[0]):
+        x_j, y_j = particle_array[j]['position']
         r = math.sqrt(euclidean_distance(x_i, x_j, y_i, y_j))
         if r < h:
             dx, dy = direction_to(x_i, y_i, x_j, y_j)
             slope = spiky_kernel_gradient(r, h)
 
-            grad_x = particles_array[j]['mass'] * slope * dx / (h * r)
-            grad_y = particles_array[j]['mass'] * slope * dy / (h * r)
+            grad_x = particle_array[j]['mass'] * slope * dx / (h * r)
+            grad_y = particle_array[j]['mass'] * slope * dy / (h * r)
             particle['density_gradient'][0] += grad_x
             particle['density_gradient'][1] += grad_y
 
@@ -107,26 +107,26 @@ def calc_shared_pressure(d1, d2, target_density, pressure_multiplier):
     return (p1 + p2) / 2
 
 @cuda.jit
-def calc_pressure_force(particles_array, h, target_density, pressure_multiplier):
+def calc_pressure_force(particle_array, h, target_density, pressure_multiplier):
     i = cuda.grid(1)
-    if i >= particles_array.shape[0]:
+    if i >= particle_array.shape[0]:
         return
 
-    particle = particles_array[i]
+    particle = particle_array[i]
     particle['pressure_force'][0] = 0
     particle['pressure_force'][1] = 0
     x_i, y_i = particle['position']
-    for j in range(particles_array.shape[0]):
+    for j in range(particle_array.shape[0]):
         if i == j: continue
 
-        x_j, y_j = particles_array[j]['position']
+        x_j, y_j = particle_array[j]['position']
         r = math.sqrt(euclidean_distance(x_i, x_j, y_i, y_j))
         if r < h:
             q = r / h
             dx, dy = direction_to(x_i, y_i, x_j, y_j)
             slope = cubic_spline_dq(q, h)
 
-            shared_pressure = calc_shared_pressure(particle['density'], particles_array[j]['density'], target_density, pressure_multiplier)
+            shared_pressure = calc_shared_pressure(particle['density'], particle_array[j]['density'], target_density, pressure_multiplier)
             force_x = shared_pressure * dx * slope * particle['mass'] / (particle['density'] + EPSILON)
             force_y = shared_pressure * dy * slope * particle['mass'] / (particle['density'] + EPSILON)
             particle['pressure_force'][0] -= force_x 
@@ -146,13 +146,13 @@ def update_velocity(velocity, pressure_force, density, dt):
     return velocity
 
 @cuda.jit
-def update_positions(particles_array, dt, screen_width, screen_height, rect_width, rect_height, rect_angle):
-    #def update_positions(particles_array, dt, screen_width, screen_height):
+def update_positions(particle_array, dt, screen_width, screen_height, rect_width, rect_height, rect_angle):
+    #def update_positions(particle_array, dt, screen_width, screen_height):
     i = cuda.grid(1)
-    if i >= particles_array.shape[0]:
+    if i >= particle_array.shape[0]:
         return
 
-    particle = particles_array[i]
+    particle = particle_array[i]
 
     # Update velocity first (assuming this updates both components)
     update_velocity(

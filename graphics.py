@@ -1,6 +1,40 @@
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 import numpy as np
+from math import pi, cos, sin
+
+def set_colour(r, g, b):
+    glColor3f(r, g, b)
+
+def draw_circle(x: float, y: float, radius: float):
+    num_segments = 36
+
+    glPushMatrix()
+    glTranslate(x, y, 0)
+
+    glBegin(GL_TRIANGLE_FAN)
+    glVertex3f(0, 0, 0)
+    for i in range(num_segments + 1):
+        angle = 2 * pi * i / num_segments
+        glVertex3f(cos(angle) * radius, sin(angle) * radius, 0)
+    glEnd()
+
+    glPopMatrix()
+
+def draw_rectangle(x, y, width, height, angle):
+    glPushMatrix()
+    glTranslate(x, y, 0)
+    glRotate(angle * 180 / pi, 0, 0, 1)
+
+    glColor3f(0, 1, 0)  # Green color
+    glBegin(GL_QUADS)
+    glVertex2f(-width/2, -height/2)
+    glVertex2f(width/2, -height/2)
+    glVertex2f(width/2, height/2)
+    glVertex2f(-width/2, height/2)
+    glEnd()
+
+    glPopMatrix()
 
 def create_shader_program():
     vertex_shader = """
@@ -8,7 +42,7 @@ def create_shader_program():
     in vec2 position;
     uniform float particle_radius;
     out vec2 v_texcoord;
-    
+
     void main() {
         gl_Position = vec4(position, 0.0, 1.0);
         v_texcoord = (position + 1.0) / 2.0;
