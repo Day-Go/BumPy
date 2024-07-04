@@ -1,18 +1,13 @@
-import time
-import random
-import numpy as np
-import numba.cuda
 from numba import cuda
 import pygame
 from pygame.locals import OPENGL, DOUBLEBUF
 from OpenGL.GL import *
 from OpenGL.GLU import *
-from math import pi, sin, cos, radians
 import dearpygui.dearpygui as dpg
 
 from physics import calc_densities, calc_density_gradients, calc_pressure_force, update_positions 
 from graphics import set_colour, draw_circle, draw_rectangle
-from simulation import particle_dtype, generate_particles
+from simulation import generate_particles
 
 SCREEN_RESOLUTION = (800, 800)
 simulation_running = False
@@ -33,8 +28,8 @@ def start_simulation():
     stochasticity = dpg.get_value("stochasticity")
 
     particle_array = generate_particles(n_particles, SCREEN_RESOLUTION, particle_spacing, stochasticity)
+    particle_array = particle_array[particle_array['mass'] != 0]
     print(particle_array)
-
     d_particle_array = cuda.to_device(particle_array)
     simulation_running = True
 
@@ -97,9 +92,9 @@ def main():
             for particle in particle_array:
                 draw_circle(particle['position'][0], particle['position'][1], dpg.get_value("particle_radius"))
 
-            set_colour(0, 1, 0)
-            rectangle_angle += ROTATION_SPEED * 1/60  # Assuming 60 FPS
-            draw_rectangle(0, 0, RECTANGLE_WIDTH, RECTANGLE_HEIGHT, rectangle_angle)
+            #set_colour(0, 1, 0)
+            #rectangle_angle += ROTATION_SPEED * 1/60  # Assuming 60 FPS
+            #draw_rectangle(0, 0, RECTANGLE_WIDTH, RECTANGLE_HEIGHT, rectangle_angle)
 
             pygame.display.flip()
 
