@@ -1,3 +1,4 @@
+import time
 import numpy as np
 from numba import cuda
 import pygame
@@ -63,7 +64,6 @@ def main():
 
     pygame.display.set_mode(SCREEN_RESOLUTION, DOUBLEBUF | OPENGL)
 
-    max_threads_per_block = 512
     normalized_width = 1.0
     normalized_height = 1.0
     
@@ -77,7 +77,7 @@ def main():
                 dpg.destroy_context()
                 return
         if simulation_running and particle_array is not None:
-            threads_per_block = 512  
+            threads_per_block = 512 
             blocks_per_grid = (particle_array.shape[0] + threads_per_block - 1) // threads_per_block
 
             h = dpg.get_value("smoothing_radius")
@@ -85,27 +85,39 @@ def main():
             PRESSURE_MULTIPLIER = dpg.get_value("pressure_multiplier")
 
             d_positions = cuda.device_array((particle_array.shape[0], 2), dtype=np.float32)
-            
+
             sorted_particle_indices = grid.update_grid(d_particle_array)
+            print(sorted_particle_indices)
 
             calc_densities[blocks_per_grid, threads_per_block](d_particle_array, sorted_particle_indices, grid.grid_start, grid.grid_end, h)
-            cuda.synchronize()       
-            
+            cuda.synchronize()
+            time.sleep(2)
+
+            particle_array = d_particle_array.copy_to_host()
+            print(particle_array)
+
             calc_density_gradients[blocks_per_grid, threads_per_block](d_particle_array, sorted_particle_indices, grid.grid_start, grid.grid_end, h)
             cuda.synchronize()
-            
+
+            particle_array = d_particle_array.copy_to_host()
+            print(particle_array)
             calc_pressure_force[blocks_per_grid, threads_per_block](d_particle_array, sorted_particle_indices, grid.grid_start, grid.grid_end, h, TARGET_DENSITY, PRESSURE_MULTIPLIER)
             cuda.synchronize()
 
+            particle_array = d_particle_array.copy_to_host()
+            print(particle_array)
             update_positions[threads_per_block, blocks_per_grid](d_particle_array, 1/60, normalized_width, normalized_height)
 
+            particle_array = d_particle_array.copy_to_host()
+            print(particle_array)
             grid.update_grid(d_particle_array)
             extract_positions[blocks_per_grid, threads_per_block](d_particle_array, d_positions)
 
             # Copy only the positions back to the host
             positions = d_positions.copy_to_host()
-            #particle_array = d_particle_array.copy_to_host()
-            #print(particle_array)
+            
+            particle_array = d_particle_array.copy_to_host()
+            print(particle_array)
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             set_colour(1, 1, 1)
@@ -116,6 +128,7 @@ def main():
             #draw_rectangle(0, 0, RECTANGLE_WIDTH, RECTANGLE_HEIGHT, rectangle_angle)
 
             pygame.display.flip()
+            break
 
 if __name__ == "__main__":
     main()

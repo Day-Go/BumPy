@@ -123,7 +123,7 @@ def calc_densities(particle_array, sorted_particle_indices, grid_start, grid_end
                             if r < h:
                                 particle['density'] += poly6_kernel(r, h) * shared_masses[k]
                         
-                        cuda.syncthreads()
+                        #cuda.syncthreads()
 
 @cuda.jit(fastmath=True)
 def calc_density_gradients(particle_array, sorted_particle_indices, grid_start, grid_end, h):
