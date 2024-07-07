@@ -1,3 +1,4 @@
+import time
 from numba import cuda
 import pygame
 from pygame.locals import OPENGL, DOUBLEBUF
@@ -23,14 +24,13 @@ def start_simulation():
     global particle_array, d_particle_array, simulation_running, rectangle_angle
 
     n_particles = dpg.get_value("num_particles")
-    particle_radius = dpg.get_value("particle_radius")
     particle_spacing = dpg.get_value("particle_spacing")
     stochasticity = dpg.get_value("stochasticity")
 
     particle_array = generate_particles(n_particles, SCREEN_RESOLUTION, particle_spacing, stochasticity)
     particle_array = particle_array[particle_array['mass'] != 0]
-    print(particle_array)
     d_particle_array = cuda.to_device(particle_array)
+
     simulation_running = True
 
 def pause_simulation():
@@ -84,8 +84,10 @@ def main():
             calc_densities[threads_per_block, blocks_per_grid](d_particle_array, h)
             calc_density_gradients[threads_per_block, blocks_per_grid](d_particle_array, h)
             calc_pressure_force[threads_per_block, blocks_per_grid](d_particle_array, h, TARGET_DENSITY, PRESSURE_MULTIPLIER)
-            update_positions[threads_per_block, blocks_per_grid](d_particle_array, 1/60, normalized_width, normalized_height, RECTANGLE_WIDTH, RECTANGLE_HEIGHT, rectangle_angle)
+            update_positions[threads_per_block, blocks_per_grid](d_particle_array, 1/60, normalized_width, normalized_height)
             particle_array = d_particle_array.copy_to_host()
+
+            #print(particle_array)
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             set_colour(1, 1, 1)
