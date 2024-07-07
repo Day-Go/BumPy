@@ -51,13 +51,13 @@ def cubic_spline_dq(q, h):
     volume = 40 / (7 * math.pi * math.pow(h, 2))
     return weight / volume
 
-@cuda.jit
+@cuda.jit(device=True)
 def poly6_kernel(r, h):
     if r > h: return 0
     influence = 315 / (64 * math.pi * h**9)
     return influence * (h**2 - r**2)**3
 
-@cuda.jit
+@cuda.jit(device=True)
 def poly6_gradient_kernel(r, h):
     if r > h: return 0
     influence = -2835 / (64 * math.pi * math.pow(h, 3))
@@ -73,76 +73,168 @@ def spiky_kernel_gradient(r, h):
     influence = -90 / (math.pi * h**7)
     return influence * (h - r)**2
 
-@cuda.jit
-def calc_densities(particle_array, h):
-    i = cuda.grid(1)
-    if i >= particle_array.shape[0]:
-        return
-
-    particle = particle_array[i]
-    particle['density'] = 0
-    x_i, y_i = particle['position']
-
-    for j in range(particle_array.shape[0]):
-        x_j, y_j = particle_array[j]['position'] 
-        r = euclidean_distance(x_i, x_j, y_i, y_j)
-        particle['density'] += poly6_kernel(r, h) * particle_array[j]['mass']
-
-@cuda.jit
-def calc_density_gradients(particle_array, h):
-    i = cuda.grid(1)
-    if i >= particle_array.shape[0]:
-        return
-
-    particle = particle_array[i]
-    particle['density_gradient'][0] = 0
-    particle['density_gradient'][1] = 0
-
-    x_i, y_i = particle['position']
-
-    for j in range(particle_array.shape[0]):
-        x_j, y_j = particle_array[j]['position']
-        r = euclidean_distance(x_i, x_j, y_i, y_j)
-        if r < h:
-            dx, dy = direction_to(x_i, y_i, x_j, y_j)
-            slope = poly6_gradient_kernel(r, h)
-
-            grad_x = particle_array[j]['mass'] * slope * dx / ((h * r) + EPSILON)
-            grad_y = particle_array[j]['mass'] * slope * dy / ((h * r) + EPSILON)
-            particle['density_gradient'][0] -= grad_x
-            particle['density_gradient'][1] -= grad_y
-
 @cuda.jit(device=True)
 def calc_shared_pressure(d1, d2, target_density, pressure_multiplier):
     p1 = convert_density_to_pressure(d1, target_density, pressure_multiplier)
     p2 = convert_density_to_pressure(d2, target_density, pressure_multiplier)
     return (p1 + p2) / 2
 
-@cuda.jit
-def calc_pressure_force(particle_array, h, target_density, pressure_multiplier):
-    i = cuda.grid(1)
-    if i >= particle_array.shape[0]:
-        return
+@cuda.jit(fastmath=True)
+def calc_densities(particle_array, sorted_particle_indices, grid_start, grid_end, h):
+    idx = cuda.grid(1)
+    
+    # Shared memory for particle positions and masses
+    shared_x = cuda.shared.array(shape=512, dtype=float32)
+    shared_y = cuda.shared.array(shape=512, dtype=float32)
+    shared_masses = cuda.shared.array(shape=512, dtype=float32)
+    
+    grid_width = int(math.sqrt(grid_start.shape[0]))
+    
+    if idx < particle_array.shape[0]:
+        particle_idx = sorted_particle_indices[idx]
+        particle = particle_array[particle_idx]
+        particle['density'] = 0
+        x_i, y_i = particle['position']
+        cell_index = int(particle['cell_index'])
+        
+        for cell_offset_y in range(-1, 2):
+            for cell_offset_x in range(-1, 2):
+                neighbor_cell = cell_index + cell_offset_x + cell_offset_y * grid_width
+                if 0 <= neighbor_cell < grid_start.shape[0]:
+                    start = int(grid_start[neighbor_cell])
+                    end = int(grid_end[neighbor_cell])
+                    
+                    for j in range(start, end, cuda.blockDim.x):
+                        # Load a block of particles into shared memory
+                        shared_idx = cuda.threadIdx.x
+                        if j + shared_idx < end:
+                            neighbor_idx = sorted_particle_indices[j + shared_idx]
+                            shared_x[shared_idx] = particle_array[neighbor_idx]['position'][0]
+                            shared_y[shared_idx] = particle_array[neighbor_idx]['position'][1]
+                            shared_masses[shared_idx] = particle_array[neighbor_idx]['mass']
+                        
+                        cuda.syncthreads()
+                        
+                        # Process particles in shared memory
+                        for k in range(min(cuda.blockDim.x, end - j)):
+                            x_j = shared_x[k]
+                            y_j = shared_y[k]
+                            r = euclidean_distance(x_i, x_j, y_i, y_j)
+                            if r < h:
+                                particle['density'] += poly6_kernel(r, h) * shared_masses[k]
+                        
+                        cuda.syncthreads()
 
-    particle = particle_array[i]
-    particle['pressure_force'][0] = 0
-    particle['pressure_force'][1] = 0
-    x_i, y_i = particle['position']
-    for j in range(particle_array.shape[0]):
-        if i == j: continue
+@cuda.jit(fastmath=True)
+def calc_density_gradients(particle_array, sorted_particle_indices, grid_start, grid_end, h):
+    idx = cuda.grid(1)
+    
+    # Shared memory for particle positions and masses
+    shared_x = cuda.shared.array(shape=512, dtype=float32)
+    shared_y = cuda.shared.array(shape=512, dtype=float32)
+    shared_masses = cuda.shared.array(shape=512, dtype=float32)
+    
+    grid_width = int(math.sqrt(grid_start.shape[0]))
+    
+    if idx < particle_array.shape[0]:
+        particle_idx = sorted_particle_indices[idx]
+        particle = particle_array[particle_idx]
+        particle['density_gradient'][0] = 0
+        particle['density_gradient'][1] = 0
+        x_i, y_i = particle['position']
+        cell_index = int(particle['cell_index'])
+        
+        for cell_offset_y in range(-1, 2):
+            for cell_offset_x in range(-1, 2):
+                neighbor_cell = cell_index + cell_offset_x + cell_offset_y * grid_width
+                if 0 <= neighbor_cell < grid_start.shape[0]:
+                    start = int(grid_start[neighbor_cell])
+                    end = int(grid_end[neighbor_cell])
+                    
+                    for j in range(start, end, cuda.blockDim.x):
+                        # Load a block of particles into shared memory
+                        shared_idx = cuda.threadIdx.x
+                        if j + shared_idx < end:
+                            neighbor_idx = sorted_particle_indices[j + shared_idx]
+                            shared_x[shared_idx] = particle_array[neighbor_idx]['position'][0]
+                            shared_y[shared_idx] = particle_array[neighbor_idx]['position'][1]
+                            shared_masses[shared_idx] = particle_array[neighbor_idx]['mass']
+                        
+                        cuda.syncthreads()
+                        
+                        # Process particles in shared memory
+                        for k in range(min(cuda.blockDim.x, end - j)):
+                            if j + k != idx:
+                                x_j = shared_x[k]
+                                y_j = shared_y[k]
+                                r = euclidean_distance(x_i, x_j, y_i, y_j)
+                                if r < h:
+                                    dx, dy = direction_to(x_i, y_i, x_j, y_j)
+                                    slope = poly6_gradient_kernel(r, h)
+                                    grad_x = shared_masses[k] * slope * dx / ((h * r) + EPSILON)
+                                    grad_y = shared_masses[k] * slope * dy / ((h * r) + EPSILON)
+                                    particle['density_gradient'][0] -= grad_x
+                                    particle['density_gradient'][1] -= grad_y
+                        
+                        cuda.syncthreads()
 
-        x_j, y_j = particle_array[j]['position']
-        r = euclidean_distance(x_i, x_j, y_i, y_j)
-        if r < h:
-            q = r / h
-            dx, dy = direction_to(x_i, y_i, x_j, y_j)
-            slope = cubic_spline_dq(q, h)
 
-            shared_pressure = calc_shared_pressure(particle['density'], particle_array[j]['density'], target_density, pressure_multiplier)
-            force_x = shared_pressure * dx * slope * particle['mass'] / (particle['density'] + EPSILON)
-            force_y = shared_pressure * dy * slope * particle['mass'] / (particle['density'] + EPSILON)
-            particle['pressure_force'][0] += force_x 
-            particle['pressure_force'][1] += force_y 
+@cuda.jit(fastmath=True)
+def calc_pressure_force(particle_array, sorted_particle_indices, grid_start, grid_end, h, target_density, pressure_multiplier):
+    idx = cuda.grid(1)
+    
+    # Shared memory for particle positions, densities, and masses
+    shared_x = cuda.shared.array(shape=512, dtype=float32)
+    shared_y = cuda.shared.array(shape=512, dtype=float32)
+    shared_densities = cuda.shared.array(shape=512, dtype=float32)
+    shared_masses = cuda.shared.array(shape=512, dtype=float32)
+    
+    grid_width = int(math.sqrt(grid_start.shape[0]))
+    
+    if idx < particle_array.shape[0]:
+        particle_idx = sorted_particle_indices[idx]
+        particle = particle_array[particle_idx]
+        particle['pressure_force'][0] = 0
+        particle['pressure_force'][1] = 0
+        x_i, y_i = particle['position']
+        cell_index = int(particle['cell_index'])
+        
+        for cell_offset_y in range(-1, 2):
+            for cell_offset_x in range(-1, 2):
+                neighbor_cell = cell_index + cell_offset_x + cell_offset_y * grid_width
+                if 0 <= neighbor_cell < grid_start.shape[0]:
+                    start = int(grid_start[neighbor_cell])
+                    end = int(grid_end[neighbor_cell])
+                    
+                    for j in range(start, end, cuda.blockDim.x):
+                        # Load a block of particles into shared memory
+                        shared_idx = cuda.threadIdx.x
+                        if j + shared_idx < end:
+                            neighbor_idx = sorted_particle_indices[j + shared_idx]
+                            shared_x[shared_idx] = particle_array[neighbor_idx]['position'][0]
+                            shared_y[shared_idx] = particle_array[neighbor_idx]['position'][1]
+                            shared_densities[shared_idx] = particle_array[neighbor_idx]['density']
+                            shared_masses[shared_idx] = particle_array[neighbor_idx]['mass']
+                        
+                        cuda.syncthreads()
+                        
+                        # Process particles in shared memory
+                        for k in range(min(cuda.blockDim.x, end - j)):
+                            if j + k != idx:
+                                x_j = shared_x[k]
+                                y_j = shared_y[k]
+                                r = euclidean_distance(x_i, x_j, y_i, y_j)
+                                if r < h:
+                                    q = r / h
+                                    dx, dy = direction_to(x_i, y_i, x_j, y_j)
+                                    slope = cubic_spline_dq(q, h)
+                                    shared_pressure = calc_shared_pressure(particle['density'], shared_densities[k], target_density, pressure_multiplier)
+                                    force_x = shared_pressure * dx * slope * particle['mass'] / (particle['density'] + EPSILON)
+                                    force_y = shared_pressure * dy * slope * particle['mass'] / (particle['density'] + EPSILON)
+                                    particle['pressure_force'][0] += force_x 
+                                    particle['pressure_force'][1] += force_y 
+                        
+                        cuda.syncthreads()
 
 @cuda.jit(device=True)
 def update_velocity(velocity, pressure_force, density, dt):
@@ -159,70 +251,50 @@ def update_velocity(velocity, pressure_force, density, dt):
 
 @cuda.jit
 def update_positions(particle_array, dt, screen_width, screen_height):
-    i = cuda.grid(1)
-    if i >= particle_array.shape[0]:
-        return
+    idx = cuda.grid(1)
+    stride = cuda.gridsize(1)
+    for i in range(idx, particle_array.shape[0], stride):
+        particle = particle_array[i]
+        
+        EPSILON = 1e-5
+        
+        update_velocity(
+            particle['velocity'], particle['pressure_force'], max(particle['density'], EPSILON), dt
+        )
 
-    particle = particle_array[i]
+        new_vx = particle['velocity'][0] + 0.5 * particle['pressure_force'][0] / max(particle['density'], EPSILON) * dt
+        new_vy = particle['velocity'][1] + 0.5 * particle['pressure_force'][1] / max(particle['density'], EPSILON) * dt
 
-    # Update velocity first (assuming this updates both components)
-    update_velocity(
-        particle['velocity'], particle['pressure_force'], particle['density'], dt
-    )
+        new_x = particle['position'][0] + new_vx * dt
+        new_y = particle['position'][1] + new_vy * dt
 
-    # Leapfrog integration
-    new_vx = particle['velocity'][0] + 0.5 * particle['pressure_force'][0] / particle['density'] * dt
-    new_vy = particle['velocity'][1] + 0.5 * particle['pressure_force'][1] / particle['density'] * dt
+        damping = 0.99
+        if new_x <= -screen_width:
+            new_x = -screen_width
+            new_vx *= -damping
+        elif new_x >= screen_width:
+            new_x = screen_width
+            new_vx *= -damping
 
-    # Tentative new position calculation
-    new_x = particle['position'][0] + new_vx * dt
-    new_y = particle['position'][1] + new_vy * dt
+        if new_y <= -screen_height:
+            new_y = -screen_height
+            new_vy *= -damping
+        elif new_y >= screen_height:
+            new_y = screen_height
+            new_vy *= -damping
 
-    # Boundary conditions
-    damping = 0.99  # Velocity damping factor
-    if new_x <= -screen_width:
-        new_x = -screen_width
-        new_vx *= -damping
-    elif new_x >= screen_width:
-        new_x = screen_width
-        new_vx *= -damping
+        particle['velocity'][0] = new_vx + 0.5 * particle['pressure_force'][0] / max(particle['density'], EPSILON) * dt
+        particle['velocity'][1] = new_vy + 0.5 * particle['pressure_force'][1] / max(particle['density'], EPSILON) * dt
 
-    if new_y <= -screen_height:
-        new_y = -screen_height
-        new_vy *= -damping
-    elif new_y >= screen_height:
-        new_y = screen_height
-        new_vy *= -damping
-
-    # Update velocity again (leapfrog)
-    particle['velocity'][0] = new_vx + 0.5 * particle['pressure_force'][0] / particle['density'] * dt
-    particle['velocity'][1] = new_vy + 0.5 * particle['pressure_force'][1] / particle['density'] * dt
-
-    # Update position with potentially modified velocity
-    particle['position'][0] = new_x
-    particle['position'][1] = new_y
+        particle['position'][0] = new_x
+        particle['position'][1] = new_y
 
 @cuda.jit
-def handle_paddle_collisions(new_x, new_y, new_vx, new_vy, rect_height, rect_width, rect_angle, damping):
-    if point_in_rotated_rectangle(new_x, new_y, 0, 0, rect_width, rect_height, rect_angle):
-        # Calculate normal vector of the rectangle side
-        normal_x, normal_y = rotate_point(0, 1, rect_angle)
-
-        # Project velocity onto normal
-        dot_product = new_vx * normal_x + new_vy * normal_y
-
-        # Reflect velocity
-        new_vx -= 2 * dot_product * normal_x
-        new_vy -= 2 * dot_product * normal_y
-
-        # Apply damping
-        new_vx *= damping
-        new_vy *= damping
-
-        # Move particle outside of rectangle
-        while point_in_rotated_rectangle(new_x, new_y, 0, 0, rect_width, rect_height, rect_angle):
-            new_x += normal_x * 0.001
-            new_y += normal_y * 0.001
+def extract_positions(particle_array, positions):
+    i = cuda.grid(1)
+    if i < particle_array.shape[0]:
+        positions[i, 0] = particle_array[i]['position'][0]
+        positions[i, 1] = particle_array[i]['position'][1]
 
 @cuda.jit(device=True)
 def rotate_point(x, y, angle):

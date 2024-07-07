@@ -10,7 +10,8 @@ particle_dtype = np.dtype([
     ('density_gradient', np.float32, (2,)),
     ('pressure', np.float32),
     ('pressure_force', np.float32, (2,)),
-    ('mass', np.float32)
+    ('mass', np.float32),
+    ('cell_index', np.int32)
 ])
 
 def generate_particles(n: int, SCREEN_RESOLUTION: tuple, spacing: float, stochasticity: float):
